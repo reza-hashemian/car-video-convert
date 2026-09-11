@@ -1,0 +1,39 @@
+# Script output
+CAR_READY/
+*.part
+
+# Media — never commit the videos themselves
+*.avi
+*.mp4
+*.mkv
+*.mov
+*.wmv
+*.flv
+*.ts
+*.webm
+*.m4v
+*.mpg
+*.mpeg
+*.3gp
+*.m2ts
+*.mts
+*.asf
+*.divx
+
+# Bundled ffmpeg, if placed alongside for portable use
+bin/
+ffmpeg
+ffmpeg.exe
+ffprobe
+ffprobe.exe
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
