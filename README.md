@@ -12,6 +12,36 @@ exact working profile was found by isolating one variable at a time.
 
 ## Quick start
 
+### Graphical version (no terminal needed)
+
+Two GUIs are provided; both wrap the same engine.
+
+**Qt version — recommended** (`car_convert_qt.py`). Needs `pip install PySide6`.
+Renders Persian/Arabic text correctly and has a cleaner layout.
+
+```bash
+pip install PySide6
+python car_convert_qt.py
+```
+
+**tkinter version** (`car_convert_gui.py`). No install needed — tkinter ships
+with Python — but Tk on Linux does not shape Arabic-script text, so its labels
+are kept short and bilingual.
+
+```bash
+python car_convert_gui.py
+```
+
+Pick the videos, pick a size, press START. Output lands in a folder named
+after the size you chose — `CAR_READY_640x480/` and so on — next to the first
+video, so trying a second size never overwrites the first attempt.
+
+The size list is ordered largest first. Start at the top; if the head unit
+shows an error, pick the next one down and convert again. The GUI file must sit in the same folder as `car_convert.py` — it is
+only a shell around that engine.
+
+### Command-line version
+
 ```bash
 # put car_convert.py in the folder with your videos, then:
 python car_convert.py
@@ -49,14 +79,21 @@ Every input becomes an AVI with this profile:
 |---|---|
 | Container | AVI |
 | Video | Xvid (MPEG-4 Simple Profile), tag `xvid` |
-| Resolution | 640×360, 16:9 |
+| Resolution | 640×480 |
 | Frame rate | 25 fps, constant |
 | Audio | MP3 stereo, 44100 Hz, 128 kbps |
 | B-frames | none |
 
-Portrait video is **letterboxed**, not cropped — the full frame is preserved
-and the leftover space is filled with black. Nothing gets cut off, nothing
-gets stretched.
+Portrait video is **pillarboxed**, not cropped: it fills the full height of
+the screen — touching top and bottom — and only the left and right get black
+padding, which keeps the aspect ratio intact so the unit doesn't reject it.
+Nothing gets cut off, nothing gets stretched. Padding never appears on all
+four sides.
+
+Black bars already baked into the source file are **detected and removed**
+before scaling. Without this, a clip that was letterboxed by some other app
+would get our padding on top of its own bars and end up black on all four
+sides.
 
 **Input format doesn't matter. Output is always AVI.** Feed it MP4, MKV, MOV,
 WMV, FLV, TS, WebM, 3GP, M2TS, or AVI — you get AVI back. That's deliberate:
@@ -74,13 +111,15 @@ the actual dashboard.
 
 What the testing established:
 
-- **Portrait video is the main killer.** Phone video (608×1080, 720×1280) is
-  refused outright. Of 23 files, the only two that played were the two
-  landscape ones.
+- **Portrait video is the main killer.** Unconverted phone video (608×1080,
+  720×1280) is refused outright. Of 23 files, the only two that played were
+  the two landscape ones — hence padding everything into a landscape frame.
 - **There is a resolution ceiling, and 1280×720 is above it.** 640×480 and
   640×360 played; 1280×720 produced `Damaged`.
-- **16:9 is fine.** The unit isn't restricted to 4:3, so 640×360 gives more
-  picture than the safe-but-small 480×360.
+- **640×480 is the tallest frame the unit accepts.** That matters most for
+  portrait video: in a 640×360 box a vertical clip is scaled down to a small
+  strip in the middle, but at 640×480 it gets a third more height and fills
+  the panel properly.
 - **Cropping to fill looks wrong.** The one test file that cropped instead of
   padding was visibly wrong on screen. Padding won.
 - **Dimensions should be multiples of 16.** Many MPEG-4 ASP decoders require
@@ -133,11 +172,16 @@ If your device differs, edit the constants at the top of `car_convert.py`:
 
 ```python
 BOX_WIDTH = 640        # output width
-BOX_HEIGHT = 360       # output height
+BOX_HEIGHT = 480       # output height
 FPS = 25               # constant frame rate
 AUDIO_RATE = 44100     # Hz
 AUDIO_BITRATE = 128    # kbps
 VIDEO_QUALITY = 4      # Xvid quality: lower is better; 2–6 is sensible
+
+CROP_DETECT = True     # strip black bars baked into the source
+CROP_SCAN_SECONDS = 12 # how much footage to scan when detecting them
+CROP_LIMIT = 24        # black threshold, 0–255; higher is stricter
+CROP_MIN_BAR = 32      # bars thinner than this many pixels are ignored
 ```
 
 Keep width and height multiples of 16.

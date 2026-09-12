@@ -13,13 +13,22 @@ car_convert.py — تبدیل ویدیو برای پخش روی هد‌یونی�
 خروجی در زیرپوشه‌ی CAR_READY/ ساخته می‌شود.
 
 پروفایل خروجی (روی سوناتا ۲۰۱۴ تست و تأیید شده):
-    640x360 · Xvid Simple Profile · تگ 'xvid' · DAR 16:9
+    640x480 · Xvid Simple Profile · تگ 'xvid' · DAR 4:3
     25 fps ثابت · MP3 استریو 44100 Hz · بدون B-frame
 
 چرا دقیقاً همین اعداد: ویدیوهای عمودی موبایل (608x1080 و مانند آن) روی
 هد‌یونیت پیام damaged می‌دهند. تست تک‌متغیره نشان داد دستگاه تا 640x480
-و نسبت 16:9 را قبول می‌کند، ولی 1280x720 را رد می‌کند. تصویر داخل قاب
-افقی pad می‌شود (نه crop) تا چیزی از کادر بریده نشود.
+را قبول می‌کند، ولی 1280x720 را رد می‌کند. قاب 640x480 انتخاب شده چون
+بلندترین ارتفاعی است که دستگاه می‌پذیرد — یعنی ویدیوی عمودی بیشترین
+تصویر ممکن را می‌گیرد و روی صفحه کوچک به نظر نمی‌رسد.
+
+تصویر داخل قاب pad می‌شود (نه crop) تا چیزی بریده نشود. ویدیوی عمودی
+ارتفاعش کامل می‌شود — به سقف و کف صفحه می‌چسبد — و فقط چپ و راستش
+پدینگ می‌گیرد تا نسبت تصویر حفظ شود و دستگاه ارور ندهد.
+
+نوار سیاهی که خودِ فایل منبع دارد قبل از این کار با cropdetect بریده
+می‌شود، وگرنه پدینگ ما روی سیاهیِ خودش می‌نشیند و نتیجه از هر چهار طرف
+سیاه می‌شود.
 """
 
 from __future__ import annotations
@@ -36,11 +45,17 @@ from pathlib import Path
 # --------------------------------------------------------------------------
 
 BOX_WIDTH = 640
-BOX_HEIGHT = 360
+BOX_HEIGHT = 480
 FPS = 25
 AUDIO_RATE = 44100
 AUDIO_BITRATE = 128
 VIDEO_QUALITY = 4          # کیفیت Xvid: کمتر = بهتر (۲ تا ۶ منطقی است)
+
+# تشخیص نوار سیاهِ داخل خود فایل منبع
+CROP_DETECT = True         # False کنید تا نوارها دست‌نخورده بمانند
+CROP_SCAN_SECONDS = 12     # چند ثانیه از فیلم برای تشخیص اسکن شود
+CROP_LIMIT = 24            # آستانه‌ی سیاهی (۰ تا ۲۵۵)؛ بالاتر = سخت‌گیرتر
+CROP_MIN_BAR = 32          # نوار کمتر از این تعداد پیکسل نادیده گرفته می‌شود
 
 OUTPUT_DIRNAME = "CAR_READY"
 
@@ -102,14 +117,99 @@ def has_audio(ffprobe: str, path: Path) -> bool:
         return False
 
 
-def build_command(ffmpeg: str, src: Path, dst: Path, audio: bool) -> list[str]:
-    # تصویر داخل قاب افقی جا می‌شود و باقی با مشکی پر می‌شود.
-    # pad و نه crop — تا از کادر چیزی بریده نشود.
-    filters = (
-        f"scale=w={BOX_WIDTH}:h={BOX_HEIGHT}:force_original_aspect_ratio=decrease,"
-        f"pad={BOX_WIDTH}:{BOX_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black,"
-        f"setsar=1,format=yuv420p,fps={FPS}"
-    )
+def probe_size(ffprobe: str, path: Path) -> tuple[int, int]:
+    """ابعاد تصویر منبع. (0, 0) یعنی نامشخص."""
+    result = run([ffprobe, "-v", "error", "-select_streams", "v:0",
+                  "-show_entries", "stream=width,height", "-of", "json",
+                  str(path)])
+    if result.returncode != 0:
+        return (0, 0)
+    try:
+        stream = json.loads(result.stdout)["streams"][0]
+        return (int(stream["width"]), int(stream["height"]))
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
+        return (0, 0)
+
+
+def detect_crop(ffmpeg: str, src: Path, duration: float,
+                source_size: tuple[int, int] = (0, 0)) -> str | None:
+    """
+    نوارهای سیاهِ پخته‌شده در خود فایل منبع را پیدا می‌کند.
+
+    خیلی از ویدیوها (مثلاً افقی‌هایی که داخل قاب عمودی اینستاگرام ذخیره
+    شده‌اند) خودشان نوار سیاه دارند. اگر آن‌ها را نبریم، پدینگِ ما روی
+    سیاهیِ خودشان می‌نشیند و نتیجه از هر چهار طرف سیاه می‌شود.
+
+    خروجی: رشته‌ی crop=w:h:x:y — یا None اگر چیزی برای بریدن نبود.
+    """
+    # از ثانیه‌ی ۳ شروع می‌کنیم تا فید-این و لوگوی ابتدای فیلم
+    # باعث تشخیص اشتباه نشود.
+    start = 3.0 if duration > CROP_SCAN_SECONDS + 4 else 0.0
+
+    result = run([
+        ffmpeg, "-hide_banner", "-nostats",
+        "-ss", str(start), "-t", str(CROP_SCAN_SECONDS), "-i", str(src),
+        "-vf", f"cropdetect=limit={CROP_LIMIT}:round=16:reset=0",
+        "-an", "-sn", "-f", "null", "-",
+    ])
+
+    # cropdetect روی stderr گزارش می‌دهد؛ آخرین خط پایدارترین حدس است.
+    crop = None
+    for line in (result.stderr or "").splitlines():
+        marker = line.rfind("crop=")
+        if marker != -1:
+            crop = line[marker:].strip()
+    if not crop:
+        return None
+
+    try:
+        w, h, x, y = (int(v) for v in crop[len("crop="):].split(":"))
+    except ValueError:
+        return None
+
+    # ابعاد بی‌معنی را قبول نمی‌کنیم (گاهی روی فیلم تماماً تاریک رخ می‌دهد).
+    if w < 16 or h < 16:
+        return None
+    if x < 0 or y < 0:
+        return None
+
+    # cropdetect با round=16 چند پیکسل را هم گرد می‌کند. برای اینکه بُرش‌های
+    # بی‌اثر را گزارش نکنیم، فقط وقتی نوار را واقعی می‌دانیم که از یک آستانه
+    # بزرگ‌تر باشد.
+    src_w, src_h = source_size
+    if src_w and src_h:
+        trimmed_x = src_w - w
+        trimmed_y = src_h - h
+        if trimmed_x < CROP_MIN_BAR and trimmed_y < CROP_MIN_BAR:
+            return None
+
+    return f"crop={w}:{h}:{x}:{y}"
+
+
+def build_command(ffmpeg: str, src: Path, dst: Path, audio: bool,
+                  crop: str | None = None,
+                  size: tuple[int, int] | None = None) -> list[str]:
+    # اول نوار سیاهِ خودِ منبع بریده می‌شود (اگر داشته باشد)، بعد تصویر
+    # داخل قاب جا می‌شود و فضای باقی‌مانده مشکی پر می‌شود.
+    #
+    # force_original_aspect_ratio=decrease یعنی تصویر با بُعدِ تنگ‌تر جا
+    # می‌شود: ویدیوی عمودی ارتفاعش کامل می‌شود (به سقف و کف می‌چسبد) و
+    # فقط چپ و راست پد می‌گیرد؛ ویدیوی خیلی پهن برعکس. هیچ‌وقت هر چهار
+    # طرف پد نمی‌شود.
+    # رابط گرافیکی می‌تواند رزولوشن دیگری بدهد؛ پیش‌فرض همان پروفایل بالاست.
+    box_w, box_h = size if size else (BOX_WIDTH, BOX_HEIGHT)
+
+    steps = []
+    if crop:
+        steps.append(crop)
+    steps += [
+        f"scale=w={box_w}:h={box_h}:force_original_aspect_ratio=decrease",
+        f"pad={box_w}:{box_h}:(ow-iw)/2:(oh-ih)/2:black",
+        "setsar=1",
+        "format=yuv420p",
+        f"fps={FPS}",
+    ]
+    filters = ",".join(steps)
 
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(src)]
     cmd += ["-map", "0:v:0"]
@@ -229,11 +329,17 @@ def main() -> int:
         source_duration = probe_duration(ffprobe, src)
         audio = has_audio(ffprobe, src)
 
+        crop = (detect_crop(ffmpeg, src, source_duration,
+                            probe_size(ffprobe, src))
+                if CROP_DETECT else None)
+        if crop:
+            log(f"          نوار سیاه منبع حذف شد ({crop[len('crop='):]})")
+
         # ابتدا در فایل موقت می‌نویسیم تا قطع‌شدن وسط کار،
         # خروجی ناقص به جا نگذارد.
         tmp = dst.with_name(dst.name + ".part")
         file_started = time.time()
-        result = run(build_command(ffmpeg, src, tmp, audio))
+        result = run(build_command(ffmpeg, src, tmp, audio, crop))
 
         if result.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
             tmp.unlink(missing_ok=True)
